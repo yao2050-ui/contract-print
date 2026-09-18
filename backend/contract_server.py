@@ -9,6 +9,7 @@ import mimetypes
 import os
 import re
 import tempfile
+import time
 import traceback
 from datetime import datetime
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
@@ -97,16 +98,33 @@ def generate_and_backfill(record_id):
     if not ctype:
         raise RuntimeError("记录缺少合同类型")
 
-    # 防重复：如果已经生成过，直接返回
+    # 防重复1：检查状态
     current_status = gc.to_text(rec.get("合同生成状态"))
-    if current_status == "已生成":
+    if current_status in ("已生成", "生成中"):
         return {
             "ok": True,
             "record_id": record_id,
             "企业名称": gc.to_text(rec.get("企业名称")),
             "合同类型": ctype,
             "skipped": True,
-            "message": "已生成过，跳过",
+            "message": "状态为%s，跳过" % current_status,
+        }
+
+    # 防重复2：检查附件字段是否已有内容
+    existing_attach = rec.get("租赁合同附件")
+    if existing_attach and isinstance(existing_attach, list) and len(existing_attach) > 0:
+        # 已有附件，先把状态设为已生成，然后跳过
+        try:
+            set_status(record_id, "已生成")
+        except Exception:
+            pass
+        return {
+            "ok": True,
+            "record_id": record_id,
+            "企业名称": gc.to_text(rec.get("企业名称")),
+            "合同类型": ctype,
+            "skipped": True,
+            "message": "已有附件，跳过",
         }
 
     tmpdir = tempfile.mkdtemp(prefix="contract_")
@@ -115,6 +133,19 @@ def generate_and_backfill(record_id):
 
     # 先标记为生成中，防止并发重复
     set_status(record_id, "生成中")
+
+    # 防重复3：再次获取记录确认状态（防止竞态条件）
+    time.sleep(0.5)
+    rec_check = fetch_record(record_id)
+    if gc.to_text(rec_check.get("合同生成状态")) != "生成中":
+        return {
+            "ok": True,
+            "record_id": record_id,
+            "企业名称": gc.to_text(rec.get("企业名称")),
+            "合同类型": ctype,
+            "skipped": True,
+            "message": "并发请求，跳过",
+        }
 
     try:
         result = gc.generate_one(rec, TEMPLATE_DIR, out_path)
