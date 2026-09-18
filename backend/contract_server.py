@@ -12,6 +12,7 @@ import tempfile
 import traceback
 from datetime import datetime
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+from urllib.parse import unquote
 
 import requests
 
@@ -139,7 +140,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True, "time": datetime.now().isoformat()})
             return
         # 静态文件服务
-        path = self.path.split("?")[0]
+        path = unquote(self.path.split("?")[0])
         if path == "/":
             path = "/index.html"
         file_path = os.path.join(STATIC_DIR, path.lstrip("/"))
