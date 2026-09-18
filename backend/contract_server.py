@@ -97,17 +97,37 @@ def generate_and_backfill(record_id):
     if not ctype:
         raise RuntimeError("记录缺少合同类型")
 
+    # 防重复：如果已经生成过，直接返回
+    current_status = gc.to_text(rec.get("合同生成状态"))
+    if current_status == "已生成":
+        return {
+            "ok": True,
+            "record_id": record_id,
+            "企业名称": gc.to_text(rec.get("企业名称")),
+            "合同类型": ctype,
+            "skipped": True,
+            "message": "已生成过，跳过",
+        }
+
     tmpdir = tempfile.mkdtemp(prefix="contract_")
     base_name = re.sub(r'[\\/:*?"<>|]', "_", "%s-%s.docx" % (ctype, gc.to_text(rec.get("企业名称"))))
     out_path = os.path.join(tmpdir, base_name)
 
-    result = gc.generate_one(rec, TEMPLATE_DIR, out_path)
-    if not result.get("ok"):
-        raise RuntimeError("生成失败: %s" % result.get("原因"))
+    # 先标记为生成中，防止并发重复
+    set_status(record_id, "生成中")
 
-    file_token = upload_attachment(record_id, out_path)
-    set_attachment(record_id, file_token)
-    set_status(record_id, "已生成")
+    try:
+        result = gc.generate_one(rec, TEMPLATE_DIR, out_path)
+        if not result.get("ok"):
+            set_status(record_id, "生成失败")
+            raise RuntimeError("生成失败: %s" % result.get("原因"))
+
+        file_token = upload_attachment(record_id, out_path)
+        set_attachment(record_id, file_token)
+        set_status(record_id, "已生成")
+    except Exception as e:
+        set_status(record_id, "生成失败")
+        raise
 
     return {
         "ok": True,

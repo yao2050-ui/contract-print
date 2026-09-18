@@ -30,7 +30,10 @@ async function loadRecords() {
   try {
     const fields = await table.getFieldList()
     const fieldMap = {}
-    fields.forEach(f => { fieldMap[f.name] = f.id })
+    await Promise.all(fields.map(async (f) => {
+      const name = await f.getName()
+      fieldMap[name] = f.id
+    }))
 
     const result = await table.getRecords({ pageSize: 200 })
     allRecords = result.records.map(rec => {
