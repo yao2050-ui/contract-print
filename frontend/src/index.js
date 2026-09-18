@@ -12,14 +12,15 @@ let currentRecord = null
 let table = null
 
 async function init() {
+  const list = document.getElementById('recordList')
   try {
-    await bitable.bridge.addRecordSelectionListener(async (e) => {
-      // 记录选择变化
-    })
+    list.innerHTML = '<div class="loading">正在连接多维表格...</div>'
     table = await bitable.base.getActiveTable()
+    list.innerHTML = '<div class="loading">加载记录中...</div>'
     await loadRecords()
   } catch (e) {
-    document.getElementById('recordList').innerHTML = '<div class="empty">初始化失败: ' + e.message + '</div>'
+    console.error('init error', e)
+    list.innerHTML = '<div class="empty">初始化失败: ' + (e.message || e) + '<br><br>请确认已在多维表格中打开本插件。</div>'
   }
 }
 
