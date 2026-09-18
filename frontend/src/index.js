@@ -35,14 +35,27 @@ async function loadRecords() {
       fieldMap[name] = f.id
     }))
 
-    const result = await table.getRecords({ pageSize: 200 })
-    allRecords = result.records.map(rec => {
-      const obj = { recordId: rec.recordId }
-      for (const [name, fid] of Object.entries(fieldMap)) {
-        obj[name] = rec.fields[fid]
-      }
-      return obj
-    })
+    // 分页获取所有记录
+    allRecords = []
+    let pageToken = undefined
+    let page = 0
+    while (true) {
+      page++
+      const result = await table.getRecords({ pageSize: 200, pageToken })
+      const batch = result.records.map(rec => {
+        const obj = { recordId: rec.recordId }
+        for (const [name, fid] of Object.entries(fieldMap)) {
+          obj[name] = rec.fields[fid]
+        }
+        return obj
+      })
+      allRecords = allRecords.concat(batch)
+      list.innerHTML = '<div class="loading">已加载 ' + allRecords.length + ' 条...</div>'
+      if (!result.hasMore || !result.pageToken) break
+      pageToken = result.pageToken
+      if (page > 20) break // 安全上限
+    }
+
     renderList(allRecords)
   } catch (e) {
     list.innerHTML = '<div class="empty">加载失败: ' + e.message + '</div>'
