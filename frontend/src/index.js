@@ -28,11 +28,11 @@ async function loadRecords() {
   const list = document.getElementById('recordList')
   list.innerHTML = '<div class="loading">加载记录中...</div>'
   try {
-    const fields = await table.getFields()
+    const fields = await table.getFieldList()
     const fieldMap = {}
     fields.forEach(f => { fieldMap[f.name] = f.id })
 
-    const result = await table.getRecords({ pageSize: 500 })
+    const result = await table.getRecords({ pageSize: 200 })
     allRecords = result.records.map(rec => {
       const obj = { recordId: rec.recordId }
       for (const [name, fid] of Object.entries(fieldMap)) {
@@ -247,13 +247,13 @@ async function uploadAttachment(blob, fileName) {
   const field = await table.getFieldByName('租赁合同附件')
   const file = new File([blob], fileName, { type: blob.type })
   await table.setRecord(currentRecord.recordId, {
-    [field.id]: [file]
+    fields: { [field.id]: [file] }
   })
   // 更新状态
   try {
     const statusField = await table.getFieldByName('合同生成状态')
     await table.setRecord(currentRecord.recordId, {
-      [statusField.id]: '已生成'
+      fields: { [statusField.id]: '已生成' }
     })
   } catch (e) { /* 状态字段可能不存在，忽略 */ }
 }
