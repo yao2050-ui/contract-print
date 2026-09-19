@@ -9,6 +9,7 @@ import mimetypes
 import os
 import re
 import tempfile
+import threading
 import time
 import traceback
 from datetime import datetime
@@ -18,6 +19,10 @@ from urllib.parse import unquote
 import requests
 
 import generate_contracts as gc
+
+# 内存锁：防止同一记录被并发重复生成
+_generating_lock = threading.Lock()
+_generating_records = set()
 
 BASE_TOKEN = os.environ.get("FEISHU_BASE_TOKEN", "bascnOa5an1A3Oo6XBrj9JwVHqc")
 TABLE_ID = os.environ.get("FEISHU_TABLE_ID", "tblRRSw6jaLD2IWi")
@@ -93,82 +98,77 @@ def set_status(record_id, option):
 
 
 def generate_and_backfill(record_id):
-    rec = fetch_record(record_id)
-    ctype = gc.to_text(rec.get("合同类型"))
-    if not ctype:
-        raise RuntimeError("记录缺少合同类型")
-
-    # 防重复1：检查状态
-    current_status = gc.to_text(rec.get("合同生成状态"))
-    if current_status in ("已生成", "生成中"):
-        return {
-            "ok": True,
-            "record_id": record_id,
-            "企业名称": gc.to_text(rec.get("企业名称")),
-            "合同类型": ctype,
-            "skipped": True,
-            "message": "状态为%s，跳过" % current_status,
-        }
-
-    # 防重复2：检查附件字段是否已有内容
-    existing_attach = rec.get("租赁合同附件")
-    if existing_attach and isinstance(existing_attach, list) and len(existing_attach) > 0:
-        # 已有附件，先把状态设为已生成，然后跳过
-        try:
-            set_status(record_id, "已生成")
-        except Exception:
-            pass
-        return {
-            "ok": True,
-            "record_id": record_id,
-            "企业名称": gc.to_text(rec.get("企业名称")),
-            "合同类型": ctype,
-            "skipped": True,
-            "message": "已有附件，跳过",
-        }
-
-    tmpdir = tempfile.mkdtemp(prefix="contract_")
-    base_name = re.sub(r'[\\/:*?"<>|]', "_", "%s-%s.docx" % (ctype, gc.to_text(rec.get("企业名称"))))
-    out_path = os.path.join(tmpdir, base_name)
-
-    # 先标记为生成中，防止并发重复
-    set_status(record_id, "生成中")
-
-    # 防重复3：再次获取记录确认状态（防止竞态条件）
-    time.sleep(0.5)
-    rec_check = fetch_record(record_id)
-    if gc.to_text(rec_check.get("合同生成状态")) != "生成中":
-        return {
-            "ok": True,
-            "record_id": record_id,
-            "企业名称": gc.to_text(rec.get("企业名称")),
-            "合同类型": ctype,
-            "skipped": True,
-            "message": "并发请求，跳过",
-        }
+    # 第一道防线：内存锁，彻底防止同一记录并发生成
+    with _generating_lock:
+        if record_id in _generating_records:
+            return {
+                "ok": True, "record_id": record_id,
+                "skipped": True, "message": "正在生成中，跳过重复请求"
+            }
+        _generating_records.add(record_id)
 
     try:
-        result = gc.generate_one(rec, TEMPLATE_DIR, out_path)
-        if not result.get("ok"):
+        rec = fetch_record(record_id)
+        ctype = gc.to_text(rec.get("合同类型"))
+        if not ctype:
+            raise RuntimeError("记录缺少合同类型")
+
+        # 第二道防线：检查状态
+        current_status = gc.to_text(rec.get("合同生成状态"))
+        if current_status in ("已生成", "生成中"):
+            return {
+                "ok": True, "record_id": record_id,
+                "企业名称": gc.to_text(rec.get("企业名称")),
+                "合同类型": ctype,
+                "skipped": True, "message": "状态为%s，跳过" % current_status,
+            }
+
+        # 第三道防线：检查附件字段是否已有内容
+        existing_attach = rec.get("租赁合同附件")
+        if existing_attach and isinstance(existing_attach, list) and len(existing_attach) > 0:
+            try:
+                set_status(record_id, "已生成")
+            except Exception:
+                pass
+            return {
+                "ok": True, "record_id": record_id,
+                "企业名称": gc.to_text(rec.get("企业名称")),
+                "合同类型": ctype,
+                "skipped": True, "message": "已有附件，跳过",
+            }
+
+        tmpdir = tempfile.mkdtemp(prefix="contract_")
+        base_name = re.sub(r'[\\/:*?"<>|]', "_", "%s-%s.docx" % (ctype, gc.to_text(rec.get("企业名称"))))
+        out_path = os.path.join(tmpdir, base_name)
+
+        # 标记为生成中
+        set_status(record_id, "生成中")
+
+        try:
+            result = gc.generate_one(rec, TEMPLATE_DIR, out_path)
+            if not result.get("ok"):
+                set_status(record_id, "生成失败")
+                raise RuntimeError("生成失败: %s" % result.get("原因"))
+
+            file_token = upload_attachment(record_id, out_path)
+            set_attachment(record_id, file_token)
+            set_status(record_id, "已生成")
+        except Exception as e:
             set_status(record_id, "生成失败")
-            raise RuntimeError("生成失败: %s" % result.get("原因"))
+            raise
 
-        file_token = upload_attachment(record_id, out_path)
-        set_attachment(record_id, file_token)
-        set_status(record_id, "已生成")
-    except Exception as e:
-        set_status(record_id, "生成失败")
-        raise
-
-    return {
-        "ok": True,
-        "record_id": record_id,
-        "企业名称": result["企业名称"],
-        "合同类型": ctype,
-        "file_token": file_token,
-        "替换处数": result["替换处数"],
-        "未替换占位符": result["未替换占位符"],
-    }
+        return {
+            "ok": True,
+            "record_id": record_id,
+            "企业名称": result["企业名称"],
+            "合同类型": ctype,
+            "file_token": file_token,
+            "替换处数": result["替换处数"],
+            "未替换占位符": result["未替换占位符"],
+        }
+    finally:
+        with _generating_lock:
+            _generating_records.discard(record_id)
 
 
 class Handler(BaseHTTPRequestHandler):
